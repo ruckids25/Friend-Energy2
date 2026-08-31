@@ -37,6 +37,7 @@ app.use(
 app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
+    version: "2.1.0",
     campaign: "OYOSHI — Tag Your Good Energy Friend",
     processedComments: duplicateGuard.size,
     uptime: Math.floor(process.uptime()),
