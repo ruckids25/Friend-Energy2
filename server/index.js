@@ -61,8 +61,10 @@ app.get("/card-image", async (req, res) => {
   const friendId = req.query.friendId || null;
   const name = req.query.name || "Friend";
 
+  const token = (process.env.FB_PAGE_ACCESS_TOKEN || "").replace(/["'\r\n\t ]/g, "").trim();
+
   const profilePicUrl = friendId
-    ? `https://graph.facebook.com/v21.0/${friendId}/picture?type=large&redirect=true`
+    ? `https://graph.facebook.com/v21.0/${friendId}/picture?type=large&access_token=${token}`
     : null;
 
   try {
@@ -237,8 +239,8 @@ async function handleNewComment(commentData, pageId) {
 // Bypasses Facebook Webhook Review restrictions!
 
 async function pollPageComments() {
-  const pageId = (process.env.FB_PAGE_ID || "").trim().replace(/^["']|["']$/g, "").trim();
-  const token = (process.env.FB_PAGE_ACCESS_TOKEN || "").trim().replace(/^["']|["']$/g, "").trim();
+  const pageId = (process.env.FB_PAGE_ID || "").replace(/["'\r\n\t ]/g, "").trim();
+  const token = (process.env.FB_PAGE_ACCESS_TOKEN || "").replace(/["'\r\n\t ]/g, "").trim();
 
   if (!pageId || !token) return;
 

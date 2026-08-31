@@ -43,8 +43,7 @@ function verifyWebhookSignature(rawBody, signature, appSecret) {
  * @returns {string}
  */
 function getPageToken() {
-  let token = process.env.FB_PAGE_ACCESS_TOKEN || "";
-  token = token.trim().replace(/^["']|["']$/g, "").trim();
+  let token = (process.env.FB_PAGE_ACCESS_TOKEN || "").replace(/["'\r\n\t ]/g, "").trim();
   if (!token) {
     throw new Error(
       "FB_PAGE_ACCESS_TOKEN is not set. See SETUP_GUIDE.md for instructions."
