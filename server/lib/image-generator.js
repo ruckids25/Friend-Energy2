@@ -1,9 +1,12 @@
 // ==================================================
-// Dynamic Image Generator (Canvas Profile Overlay)
+// Dynamic Image Generator (Sharp Profile Overlay)
+// ==================================================
+// Uses 'sharp' instead of @napi-rs/canvas for better
+// compatibility with Render.com build environment.
 // ==================================================
 
-const { createCanvas, loadImage } = require("@napi-rs/canvas");
 const axios = require("axios");
+const sharp = require("sharp");
 
 const BG_IMAGES = {
   1: "https://i.ibb.co/j9y1XGDC/1.jpg",
@@ -24,12 +27,16 @@ async function generateCardImage(bgIndex, profilePicUrl, friendName) {
   const bgUrl = BG_IMAGES[bgIndex] || BG_IMAGES[1];
 
   // Load background image
-  const bg = await loadImage(bgUrl);
-  const canvas = createCanvas(bg.width, bg.height);
-  const ctx = canvas.getContext("2d");
+  const bgResponse = await axios.get(bgUrl, {
+    responseType: "arraybuffer",
+    timeout: 10000,
+  });
+  let bgBuffer = Buffer.from(bgResponse.data);
 
-  // Draw background
-  ctx.drawImage(bg, 0, 0, bg.width, bg.height);
+  // Get background dimensions
+  const bgMeta = await sharp(bgBuffer).metadata();
+  const bgWidth = bgMeta.width;
+  const bgHeight = bgMeta.height;
 
   // Overlay profile picture if provided
   if (profilePicUrl) {
@@ -37,44 +44,77 @@ async function generateCardImage(bgIndex, profilePicUrl, friendName) {
       const response = await axios.get(profilePicUrl, {
         responseType: "arraybuffer",
         timeout: 5000,
+        maxRedirects: 5,
       });
-      const avatar = await loadImage(Buffer.from(response.data));
+      const avatarBuffer = Buffer.from(response.data);
 
-      // Calculate circle position (center top half)
-      const centerX = bg.width / 2;
-      const centerY = bg.height * 0.42;
-      const radius = Math.min(bg.width, bg.height) * 0.16;
+      // Calculate circle position and size
+      const radius = Math.round(Math.min(bgWidth, bgHeight) * 0.16);
+      const diameter = radius * 2;
+      const centerX = Math.round(bgWidth / 2);
+      const centerY = Math.round(bgHeight * 0.42);
 
-      // Draw circular avatar
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(centerX, centerY, radius, 0, Math.PI * 2, true);
-      ctx.closePath();
-      ctx.clip();
+      // Resize avatar to fit the circle
+      const resizedAvatar = await sharp(avatarBuffer)
+        .resize(diameter, diameter, { fit: "cover" })
+        .raw()
+        .toBuffer();
 
-      ctx.drawImage(
-        avatar,
-        centerX - radius,
-        centerY - radius,
-        radius * 2,
-        radius * 2
-      );
-      ctx.restore();
+      // Create circular mask
+      const circleSvg = `<svg width="${diameter}" height="${diameter}">
+        <circle cx="${radius}" cy="${radius}" r="${radius}" fill="white"/>
+      </svg>`;
 
-      // White border ring around avatar
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(centerX, centerY, radius, 0, Math.PI * 2, true);
-      ctx.lineWidth = 10;
-      ctx.strokeStyle = "#FFFFFF";
-      ctx.stroke();
-      ctx.restore();
+      // Apply circular mask to avatar
+      const circularAvatar = await sharp(resizedAvatar, {
+        raw: { width: diameter, height: diameter, channels: 3 },
+      })
+        .ensureAlpha()
+        .composite([
+          {
+            input: Buffer.from(circleSvg),
+            blend: "dest-in",
+          },
+        ])
+        .png()
+        .toBuffer();
+
+      // Create white border ring
+      const borderWidth = 10;
+      const borderDiameter = diameter + borderWidth * 2;
+      const borderRadius = borderDiameter / 2;
+      const borderSvg = `<svg width="${borderDiameter}" height="${borderDiameter}">
+        <circle cx="${borderRadius}" cy="${borderRadius}" r="${borderRadius}" fill="white"/>
+      </svg>`;
+      const borderCircle = await sharp(Buffer.from(borderSvg))
+        .png()
+        .toBuffer();
+
+      // Composite: background + white border ring + circular avatar
+      bgBuffer = await sharp(bgBuffer)
+        .composite([
+          {
+            input: borderCircle,
+            left: centerX - Math.round(borderDiameter / 2),
+            top: centerY - Math.round(borderDiameter / 2),
+          },
+          {
+            input: circularAvatar,
+            left: centerX - radius,
+            top: centerY - radius,
+          },
+        ])
+        .jpeg({ quality: 90 })
+        .toBuffer();
+
+      return bgBuffer;
     } catch (err) {
       console.warn("[ImageGen] ⚠️ Profile pic overlay warning:", err.message);
     }
   }
 
-  return canvas.toBuffer("image/jpeg");
+  // Return background only (no overlay)
+  return sharp(bgBuffer).jpeg({ quality: 90 }).toBuffer();
 }
 
 module.exports = {
