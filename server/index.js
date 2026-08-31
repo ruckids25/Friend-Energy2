@@ -43,6 +43,22 @@ app.get("/health", (_req, res) => {
   });
 });
 
+app.get("/debug-token", (_req, res) => {
+  const raw = process.env.FB_PAGE_ACCESS_TOKEN || "(NOT SET)";
+  const cleaned = raw.replace(/["'\r\n\t ]/g, "").trim();
+  res.json({
+    raw_length: raw.length,
+    cleaned_length: cleaned.length,
+    first10: raw.substring(0, 10),
+    last5: raw.substring(raw.length - 5),
+    has_quotes: raw.includes('"') || raw.includes("'"),
+    has_whitespace: /\s/.test(raw),
+    starts_with_EAA: raw.startsWith("EAA"),
+    cleaned_first10: cleaned.substring(0, 10),
+    cleaned_last5: cleaned.substring(cleaned.length - 5),
+  });
+});
+
 app.get("/privacy", (_req, res) => {
   res.send(`
     <html>
