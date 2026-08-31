@@ -207,7 +207,7 @@ async function pollPageComments() {
   if (!pageId || !token) return;
 
   try {
-    const url = `https://graph.facebook.com/v21.0/${pageId}/published_posts`;
+    const url = `https://graph.facebook.com/v21.0/${pageId}/feed`;
     const response = await axios.get(url, {
       params: {
         fields: "id,comments{id,message,from,message_tags,created_time}",
