@@ -7,70 +7,72 @@
 
 const PERSONALITY_TYPES = [
   {
+    index: 1,
     type: "THE HYPE FRIEND",
     emoji: "🔥",
     desc: "คนที่พร้อมเติมไฟให้คุณเสมอ",
+    imageUrl: "https://i.ibb.co/j9y1XGDC/1.jpg",
   },
   {
+    index: 2,
     type: "THE COMFORT FRIEND",
     emoji: "🤗",
     desc: "ไม่ต้องพูดเยอะก็เข้าใจกัน",
+    imageUrl: "https://i.ibb.co/5hFJpTL1/2.jpg",
   },
   {
+    index: 3,
     type: "THE CHAOS FRIEND",
     emoji: "🤪",
     desc: "อยู่ด้วยกันทีไร ไม่มีคำว่าสงบ",
+    imageUrl: "https://i.ibb.co/60P7VPLD/3.jpg",
   },
   {
+    index: 4,
     type: "THE ADVENTURE FRIEND",
     emoji: "🏔️",
     desc: "คนที่พร้อมไปทุกที่ด้วยกัน",
+    imageUrl: "https://i.ibb.co/XZWHVscg/4.jpg",
   },
 ];
 
-/**
- * Extract tagged friend name(s) from a comment.
- *
- * Strategy (ordered by reliability):
- * 1. Use message_tags from Graph API (most reliable)
- * 2. Parse @mentions from raw text
- * 3. Fall back to the entire comment text (cleaned)
- *
- * @param {string} commentText - Raw comment text
- * @param {Array} messageTags - message_tags array from Graph API (optional)
- * @returns {string|null} Extracted friend name, or null if nothing found
- */
-function extractFriendName(commentText, messageTags = []) {
-  // Strategy 1: Use Graph API message_tags
+function extractFriendData(commentText, messageTags = []) {
   if (messageTags && messageTags.length > 0) {
-    // Pick the first tagged user (exclude the Page itself)
     const tag = messageTags.find((t) => t.type === "user");
     if (tag && tag.name) {
-      return tag.name.trim();
+      return {
+        name: tag.name.trim(),
+        id: tag.id || null,
+      };
     }
   }
 
-  // Strategy 2: Parse @mentions from raw text
-  // Captures the first word right after @ (works for Thai nicknames: @มิ้นท์, @แพรว)
-  // For full names with spaces, Strategy 1 (message_tags) is more reliable
   const atMentionRegex = /@([\p{L}\p{M}\p{N}_.]+)/gu;
   const matches = [...(commentText || "").matchAll(atMentionRegex)];
   if (matches.length > 0) {
-    return matches[0][1].trim();
+    return {
+      name: matches[0][1].trim(),
+      id: null,
+    };
   }
 
-  // Strategy 3: Fall back — clean and use the whole comment
-  // (for cases where user just types "มิ้นท์" without @)
   const cleaned = (commentText || "")
-    .replace(/#\S+/g, "") // Remove hashtags
-    .replace(/https?:\/\/\S+/g, "") // Remove URLs
+    .replace(/#\S+/g, "")
+    .replace(/https?:\/\/\S+/g, "")
     .trim();
 
   if (cleaned.length > 0 && cleaned.length <= 40) {
-    return cleaned;
+    return {
+      name: cleaned,
+      id: null,
+    };
   }
 
-  return null;
+  return { name: null, id: null };
+}
+
+function extractFriendName(commentText, messageTags = []) {
+  return extractFriendData(commentText, messageTags).name;
 }
 
 /**
@@ -120,6 +122,7 @@ function formatReplyMessage(friendName, personality, score) {
 module.exports = {
   PERSONALITY_TYPES,
   extractFriendName,
+  extractFriendData,
   generateResult,
   formatReplyMessage,
 };

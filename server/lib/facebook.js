@@ -43,7 +43,8 @@ function verifyWebhookSignature(rawBody, signature, appSecret) {
  * @returns {string}
  */
 function getPageToken() {
-  const token = process.env.FB_PAGE_ACCESS_TOKEN;
+  let token = process.env.FB_PAGE_ACCESS_TOKEN || "";
+  token = token.trim().replace(/^["']|["']$/g, "").trim();
   if (!token) {
     throw new Error(
       "FB_PAGE_ACCESS_TOKEN is not set. See SETUP_GUIDE.md for instructions."
@@ -71,20 +72,29 @@ async function getCommentDetails(commentId) {
 }
 
 /**
- * Reply to a comment with a text message.
- *
- * @param {string} commentId - The comment to reply to
- * @param {string} message - Reply text
- * @returns {Promise<object>} Response from Graph API (includes new comment id)
+ * Reply to a comment on a Page post.
+ * @param {string} commentId
+ * @param {string} message
+ * @param {string} [attachmentUrl] - Optional image URL to attach
+ * @returns {Promise<object>} Response data containing comment reply ID
  */
-async function replyToComment(commentId, message) {
-  const url = `${GRAPH_API_BASE}/${commentId}/comments`;
-  const response = await axios.post(url, null, {
-    params: {
-      message,
-      access_token: getPageToken(),
-    },
-  });
+async function replyToComment(commentId, message, attachmentUrl = null) {
+  const token = getPageToken();
+
+  const payload = {
+    message,
+    access_token: token,
+  };
+
+  if (attachmentUrl) {
+    payload.attachment_url = attachmentUrl;
+  }
+
+  const response = await axios.post(
+    `https://graph.facebook.com/v21.0/${commentId}/comments`,
+    payload
+  );
+
   console.log(
     `[FB] ✅ Replied to comment ${commentId} → new reply ID: ${response.data.id}`
   );

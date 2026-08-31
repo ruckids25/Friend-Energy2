@@ -17,6 +17,7 @@ const axios = require("axios");
 const facebook = require("./lib/facebook");
 const campaign = require("./lib/campaign");
 const duplicateGuard = require("./lib/duplicate-guard");
+const imageGenerator = require("./lib/image-generator");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -53,6 +54,30 @@ app.get("/privacy", (_req, res) => {
       </body>
     </html>
   `);
+});
+
+app.get("/card-image", async (req, res) => {
+  const bgIndex = req.query.bg || 1;
+  const friendId = req.query.friendId || null;
+  const name = req.query.name || "Friend";
+
+  const profilePicUrl = friendId
+    ? `https://graph.facebook.com/v21.0/${friendId}/picture?type=large&redirect=true`
+    : null;
+
+  try {
+    const imageBuffer = await imageGenerator.generateCardImage(
+      bgIndex,
+      profilePicUrl,
+      name
+    );
+    res.setHeader("Content-Type", "image/jpeg");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.send(imageBuffer);
+  } catch (err) {
+    console.error("[CardImage] Error generating card:", err.message);
+    res.status(500).send("Error generating image");
+  }
 });
 
 // ---------- Webhook Verification (GET) ----------
@@ -156,8 +181,9 @@ async function handleNewComment(commentData, pageId) {
       }
     }
 
-    // Extract friend name
-    const friendName = campaign.extractFriendName(messageText, messageTags);
+    const friendData = campaign.extractFriendData(messageText, messageTags);
+    const friendName = friendData.name;
+    const friendId = friendData.id;
 
     if (!friendName) {
       console.log(
@@ -166,7 +192,7 @@ async function handleNewComment(commentData, pageId) {
       return;
     }
 
-    console.log(`[Comment] 🎯 Extracted friend name: "${friendName}"`);
+    console.log(`[Comment] 🎯 Extracted friend name: "${friendName}" (ID: ${friendId || "none"})`);
 
     // Generate personality result
     const result = campaign.generateResult(friendName);
@@ -181,13 +207,23 @@ async function handleNewComment(commentData, pageId) {
       result.score
     );
 
+    // Dynamic Image URL with profile picture overlay if friendId is present
+    const baseUrl = process.env.PUBLIC_URL || "https://friend-energy-3.onrender.com";
+    const imageUrl = friendId
+      ? `${baseUrl}/card-image?bg=${result.personality.index || 1}&friendId=${friendId}&name=${encodeURIComponent(friendName)}`
+      : result.personality.imageUrl;
+
     // Reply delay
     const delay = parseInt(process.env.REPLY_DELAY_MS || "2000", 10);
     await new Promise((resolve) => setTimeout(resolve, delay));
 
-    // Send reply via Graph API
-    const reply = await facebook.replyToComment(commentId, replyMessage);
-    console.log(`[Comment] ✅ Successfully replied! Reply ID: ${reply.id}`);
+    // Send reply via Graph API (with image attachment!)
+    const reply = await facebook.replyToComment(
+      commentId,
+      replyMessage,
+      imageUrl
+    );
+    console.log(`[Comment] ✅ Successfully replied with Image! Reply ID: ${reply.id}`);
   } catch (error) {
     console.error(
       `[Comment] ❌ Error processing comment ${commentId}:`,
@@ -201,49 +237,62 @@ async function handleNewComment(commentData, pageId) {
 // Bypasses Facebook Webhook Review restrictions!
 
 async function pollPageComments() {
-  const pageId = process.env.FB_PAGE_ID;
-  const token = process.env.FB_PAGE_ACCESS_TOKEN;
+  const pageId = (process.env.FB_PAGE_ID || "").trim().replace(/^["']|["']$/g, "").trim();
+  const token = (process.env.FB_PAGE_ACCESS_TOKEN || "").trim().replace(/^["']|["']$/g, "").trim();
 
   if (!pageId || !token) return;
 
   try {
-    const url = `https://graph.facebook.com/v21.0/${pageId}/feed`;
-    const response = await axios.get(url, {
+    const feedUrl = `https://graph.facebook.com/v21.0/${pageId}/feed`;
+    const feedRes = await axios.get(feedUrl, {
       params: {
-        fields: "id,comments{id,message,from,message_tags,created_time}",
+        fields: "id,message",
         limit: 5,
         access_token: token,
       },
     });
 
-    const posts = response.data.data || [];
+    const posts = feedRes.data?.data || [];
 
     for (const post of posts) {
-      const comments = post.comments?.data || [];
-      for (const comment of comments) {
-        const commentId = comment.id;
-        const senderId = comment.from?.id;
-
-        // Skip if already processed or from page itself
-        if (
-          duplicateGuard.hasProcessed(commentId) ||
-          senderId === pageId
-        ) {
-          duplicateGuard.markProcessed(commentId);
-          continue;
-        }
-
-        await handleNewComment(
-          {
-            comment_id: commentId,
-            sender_id: senderId,
-            sender_name: comment.from?.name || "User",
-            message: comment.message || "",
-            message_tags: comment.message_tags || [],
-            post_id: post.id,
+      try {
+        const commentsUrl = `https://graph.facebook.com/v21.0/${post.id}/comments`;
+        const commentsRes = await axios.get(commentsUrl, {
+          params: {
+            fields: "id,message,from,message_tags,created_time",
+            limit: 10,
+            access_token: token,
           },
-          pageId
-        );
+        });
+
+        const comments = commentsRes.data?.data || [];
+        for (const comment of comments) {
+          const commentId = comment.id;
+          const senderId = comment.from?.id;
+
+          // Skip if already processed or from page itself
+          if (
+            duplicateGuard.hasProcessed(commentId) ||
+            senderId === pageId
+          ) {
+            duplicateGuard.markProcessed(commentId);
+            continue;
+          }
+
+          await handleNewComment(
+            {
+              comment_id: commentId,
+              sender_id: senderId,
+              sender_name: comment.from?.name || "User",
+              message: comment.message || "",
+              message_tags: comment.message_tags || [],
+              post_id: post.id,
+            },
+            pageId
+          );
+        }
+      } catch (_err) {
+        // Continue to next post if single post comments query fails
       }
     }
   } catch (error) {
