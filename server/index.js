@@ -247,9 +247,10 @@ async function pollPageComments() {
       }
     }
   } catch (error) {
-    if (error.response?.data?.error?.code === 190) {
-      console.warn("⚠️ Page Access Token expired — please update FB_PAGE_ACCESS_TOKEN");
-    }
+    console.error(
+      "⚠️ Poll Error from Facebook API:",
+      error.response?.data?.error || error.message
+    );
   }
 }
 
