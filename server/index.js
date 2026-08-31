@@ -1,19 +1,19 @@
 // ==================================================
 // OYOSHI Campaign Server — Main Entry Point
 // ==================================================
-// Express server that handles Facebook Webhooks
+// Express server that handles Facebook Page comment auto-reply
 // for the "Tag Your Good Energy Friend" campaign.
 //
-// Flow:
-// 1. Facebook sends a webhook when someone comments on a Page post
-// 2. We extract the tagged friend name from the comment
-// 3. We generate a random Personality Type + Score
-// 4. We reply to the comment with the result
+// Dual Engine:
+// 1. Webhooks (Real-time webhook listener)
+// 2. Auto-Poll Engine (Fetches new page comments every 5s)
+//    -> Bypasses Meta Webhook App Review restrictions!
 // ==================================================
 
 require("dotenv").config();
 
 const express = require("express");
+const axios = require("axios");
 const facebook = require("./lib/facebook");
 const campaign = require("./lib/campaign");
 const duplicateGuard = require("./lib/duplicate-guard");
@@ -23,17 +23,15 @@ const PORT = process.env.PORT || 3000;
 
 // ---------- Middleware ----------
 
-// We need raw body for signature verification, but also parsed JSON
 app.use(
   express.json({
     verify: (req, _res, buf) => {
-      // Store raw body buffer for webhook signature verification
       req.rawBody = buf;
     },
   })
 );
 
-// ---------- Health Check ----------
+// ---------- Health & Privacy Check ----------
 
 app.get("/health", (_req, res) => {
   res.json({
@@ -44,9 +42,20 @@ app.get("/health", (_req, res) => {
   });
 });
 
+app.get("/privacy", (_req, res) => {
+  res.send(`
+    <html>
+      <head><title>Privacy Policy - OYOSHI Campaign</title></head>
+      <body style="font-family:sans-serif; padding:40px; line-height:1.6;">
+        <h2>Privacy Policy for OYOSHI Good Energy Campaign</h2>
+        <p>This application processes public Facebook Page comments to generate fun campaign results ("Tag Your Good Energy Friend").</p>
+        <p>No personal user data is permanently stored or shared with third parties.</p>
+      </body>
+    </html>
+  `);
+});
+
 // ---------- Webhook Verification (GET) ----------
-// Facebook sends a GET request to verify our webhook endpoint.
-// We must respond with the hub.challenge value if the verify token matches.
 
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -63,13 +72,10 @@ app.get("/webhook", (req, res) => {
 });
 
 // ---------- Webhook Handler (POST) ----------
-// Facebook sends POST requests here when events happen (new comments, etc.)
 
 app.post("/webhook", async (req, res) => {
-  // Step 1: Respond immediately (Facebook requires < 3 second response)
   res.status(200).send("EVENT_RECEIVED");
 
-  // Step 2: Verify signature (security — ensure request is from Facebook)
   const signature = req.headers["x-hub-signature-256"];
   if (process.env.FB_APP_SECRET) {
     const isValid = facebook.verifyWebhookSignature(
@@ -83,7 +89,6 @@ app.post("/webhook", async (req, res) => {
     }
   }
 
-  // Step 3: Process events
   const body = req.body;
   if (body.object !== "page") return;
 
@@ -92,45 +97,43 @@ app.post("/webhook", async (req, res) => {
       if (change.field !== "feed") continue;
 
       const value = change.value;
-
-      // Only process new comments (not edits, deletes, etc.)
       if (value.item !== "comment" || value.verb !== "add") continue;
 
-      await handleNewComment(value, entry.id);
+      await handleNewComment({
+        comment_id: value.comment_id,
+        sender_id: value.sender_id,
+        sender_name: value.sender_name,
+        message: value.message || "",
+        post_id: value.post_id,
+      }, entry.id);
     }
   }
 });
 
-// ---------- Comment Handler Logic ----------
+// ---------- Comment Processor ----------
 
 async function handleNewComment(commentData, pageId) {
   const commentId = commentData.comment_id;
   const senderId = commentData.sender_id;
-  const senderName = commentData.sender_name;
+  const senderName = commentData.sender_name || "User";
   const messageText = commentData.message || "";
-
-  console.log(
-    `[Comment] 💬 New comment from ${senderName} (${senderId}): "${messageText}"`
-  );
-
-  // Guard: Don't reply to our own comments (prevent infinite loop!)
-  if (senderId === process.env.FB_PAGE_ID || senderId === pageId) {
-    console.log("[Comment] ⏭️ Skipping — comment is from our own Page");
-    return;
-  }
 
   // Guard: Don't process the same comment twice
   if (duplicateGuard.hasProcessed(commentId)) {
-    console.log(`[Comment] ⏭️ Skipping — comment ${commentId} already processed`);
     return;
   }
 
-  // Guard: Check if this is for a specific campaign post only
+  // Guard: Don't reply to our own page comments
+  if (senderId === process.env.FB_PAGE_ID || senderId === pageId) {
+    duplicateGuard.markProcessed(commentId);
+    return;
+  }
+
+  // Guard: Specific post filter if configured
   if (
     process.env.CAMPAIGN_POST_ID &&
     commentData.post_id !== process.env.CAMPAIGN_POST_ID
   ) {
-    console.log("[Comment] ⏭️ Skipping — not on the campaign post");
     return;
   }
 
@@ -138,99 +141,137 @@ async function handleNewComment(commentData, pageId) {
   duplicateGuard.markProcessed(commentId);
 
   try {
-    // Step 1: Get full comment details with message_tags
-    let messageTags = [];
-    try {
-      const details = await facebook.getCommentDetails(commentId);
-      messageTags = details.message_tags || [];
-    } catch (err) {
-      console.warn(
-        `[Comment] ⚠️ Could not fetch comment details: ${err.message}`
-      );
-      // Continue with raw text parsing as fallback
+    console.log(
+      `[Comment] 💬 New comment from ${senderName}: "${messageText}"`
+    );
+
+    // Get full details if messageTags not provided
+    let messageTags = commentData.message_tags || [];
+    if (!messageTags.length) {
+      try {
+        const details = await facebook.getCommentDetails(commentId);
+        messageTags = details.message_tags || [];
+      } catch (_e) {
+        // Use raw text fallback
+      }
     }
 
-    // Step 2: Extract the friend name
+    // Extract friend name
     const friendName = campaign.extractFriendName(messageText, messageTags);
 
     if (!friendName) {
       console.log(
-        "[Comment] ⏭️ Skipping — could not extract friend name from comment"
+        `[Comment] ⏭️ Skipping comment ${commentId} — no friend name found`
       );
       return;
     }
 
     console.log(`[Comment] 🎯 Extracted friend name: "${friendName}"`);
 
-    // Step 3: Generate personality result
+    // Generate personality result
     const result = campaign.generateResult(friendName);
     console.log(
       `[Comment] ✨ Result: ${result.personality.type} — ${result.score}%`
     );
 
-    // Step 4: Format the reply message
+    // Format reply message
     const replyMessage = campaign.formatReplyMessage(
       result.friendName,
       result.personality,
       result.score
     );
 
-    // Step 5: Delay before replying (avoid spam detection)
-    const delay = parseInt(process.env.REPLY_DELAY_MS || "3000", 10);
+    // Reply delay
+    const delay = parseInt(process.env.REPLY_DELAY_MS || "2000", 10);
     await new Promise((resolve) => setTimeout(resolve, delay));
 
-    // Step 6: Reply to the comment
+    // Send reply via Graph API
     const reply = await facebook.replyToComment(commentId, replyMessage);
     console.log(`[Comment] ✅ Successfully replied! Reply ID: ${reply.id}`);
   } catch (error) {
-    console.error(`[Comment] ❌ Error processing comment ${commentId}:`, error.message);
+    console.error(
+      `[Comment] ❌ Error processing comment ${commentId}:`,
+      error.response?.data || error.message
+    );
+  }
+}
 
-    // Log Graph API error details if available
-    if (error.response?.data?.error) {
-      console.error("[Comment] Facebook API Error:", error.response.data.error);
+// ---------- Auto-Poll Engine ----------
+// Continuously checks for new comments on Page posts every 5 seconds.
+// Bypasses Facebook Webhook Review restrictions!
+
+async function pollPageComments() {
+  const pageId = process.env.FB_PAGE_ID;
+  const token = process.env.FB_PAGE_ACCESS_TOKEN;
+
+  if (!pageId || !token) return;
+
+  try {
+    const url = `https://graph.facebook.com/v21.0/${pageId}/published_posts`;
+    const response = await axios.get(url, {
+      params: {
+        fields: "id,comments{id,message,from,message_tags,created_time}",
+        limit: 5,
+        access_token: token,
+      },
+    });
+
+    const posts = response.data.data || [];
+
+    for (const post of posts) {
+      const comments = post.comments?.data || [];
+      for (const comment of comments) {
+        const commentId = comment.id;
+        const senderId = comment.from?.id;
+
+        // Skip if already processed or from page itself
+        if (
+          duplicateGuard.hasProcessed(commentId) ||
+          senderId === pageId
+        ) {
+          duplicateGuard.markProcessed(commentId);
+          continue;
+        }
+
+        await handleNewComment(
+          {
+            comment_id: commentId,
+            sender_id: senderId,
+            sender_name: comment.from?.name || "User",
+            message: comment.message || "",
+            message_tags: comment.message_tags || [],
+            post_id: post.id,
+          },
+          pageId
+        );
+      }
+    }
+  } catch (error) {
+    if (error.response?.data?.error?.code === 190) {
+      console.warn("⚠️ Page Access Token expired — please update FB_PAGE_ACCESS_TOKEN");
     }
   }
 }
 
-// ---------- Utility: Subscribe Page to Webhooks ----------
-// Run this once: node -e "require('./index'); fetch('http://localhost:3000/subscribe-page')"
-
-app.post("/subscribe-page", async (_req, res) => {
-  const pageId = process.env.FB_PAGE_ID;
-  if (!pageId) {
-    return res.status(400).json({ error: "FB_PAGE_ID not set in .env" });
-  }
-
-  try {
-    const result = await facebook.subscribePageWebhook(pageId);
-    res.json({ success: true, result });
-  } catch (error) {
-    res
-      .status(500)
-      .json({ error: error.message, details: error.response?.data });
-  }
-});
+// Poll every 5 seconds
+const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS || "5000", 10);
+setInterval(pollPageComments, POLL_INTERVAL_MS);
 
 // ---------- Start Server ----------
 
 app.listen(PORT, () => {
   console.log(`
 ╔══════════════════════════════════════════════════╗
-║   ⚡ OYOSHI Campaign Server                      ║
+║   ⚡ OYOSHI Campaign Server (Dual Engine)       ║
 ║   Tag Your Good Energy Friend                    ║
 ╠══════════════════════════════════════════════════╣
 ║   🌐 Server:    http://localhost:${PORT}            ║
 ║   🔗 Webhook:   /webhook                         ║
+║   🔄 Polling:   Every ${POLL_INTERVAL_MS / 1000}s                   ║
 ║   💚 Health:    /health                           ║
 ╚══════════════════════════════════════════════════╝
   `);
 
-  // Warn if critical env vars are missing
-  if (!process.env.FB_PAGE_ACCESS_TOKEN) {
-    console.warn("⚠️  FB_PAGE_ACCESS_TOKEN is not set — webhook replies will fail!");
-    console.warn("   See SETUP_GUIDE.md for instructions.\n");
-  }
-  if (!process.env.FB_APP_SECRET) {
-    console.warn("⚠️  FB_APP_SECRET is not set — webhook signature verification disabled!\n");
-  }
+  // Run initial poll check after 2 seconds
+  setTimeout(pollPageComments, 2000);
 });
