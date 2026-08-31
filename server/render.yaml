@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: oyoshi-campaign
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: node index.js
+    plan: free
+    envVars:
+      - key: FB_VERIFY_TOKEN
+        sync: false
+      - key: FB_PAGE_ACCESS_TOKEN
+        sync: false
+      - key: FB_APP_SECRET
+        sync: false
+      - key: FB_PAGE_ID
+        sync: false
+      - key: REPLY_DELAY_MS
+        value: 3000
